@@ -309,6 +309,7 @@ sys_open(void)
   struct file *f;
   struct inode *ip;
   int n;
+  int count = 0;
 
   argint(1, &omode);
   if((n = argstr(0, path, MAXPATH)) < 0)
@@ -316,59 +317,86 @@ sys_open(void)
 
   begin_op();
 
-  if(omode & O_CREATE){
-    ip = create(path, T_FILE, 0, 0);
-    if(ip == 0){
+  while (1) {
+    if(count >= 10) {
+      printf("find link count is over\n");
       end_op();
       return -1;
     }
-  } else {
-    if((ip = namei(path)) == 0){
-      end_op();
-      return -1;
+
+    if (omode & O_CREATE) {
+      ip = create(path, T_FILE, 0, 0);
+      if (ip == 0) {
+        end_op();
+        return -1;
+      }
+    } else {
+      if ((ip = namei(path)) == 0) {
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+      if (ip->type == T_DIR && omode != O_RDONLY) {
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
     }
-    ilock(ip);
-    if(ip->type == T_DIR && omode != O_RDONLY){
+
+    if (ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)) {
       iunlockput(ip);
       end_op();
       return -1;
     }
-  }
 
-  if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
-    iunlockput(ip);
+    if (ip->type == T_SYMLINK && !(omode & O_NOFOLLOW)) {
+      printf("find link, count is %d\n", count);
+      char symlink_path[MAXPATH];
+      if (readi(ip, 0, (uint64)symlink_path, 0, MAXPATH) <= 0) {
+        printf("find link read fault\n");
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      symlink_path[MAXPATH-1] = '\0';  // 确保路径以 null 结尾
+      printf("symlink path: %s\n", symlink_path);
+      iunlockput(ip);
+      safestrcpy(path, symlink_path, MAXPATH);
+      count++;
+      printf("find link turn to next count\n");
+      continue;
+    }
+
+    if ((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0) {
+      if (f)
+        fileclose(f);
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+
+    if (ip->type == T_DEVICE) {
+      f->type = FD_DEVICE;
+      f->major = ip->major;
+    } else {
+      f->type = FD_INODE;
+      f->off = 0;
+    }
+    f->ip = ip;
+    f->readable = !(omode & O_WRONLY);
+    f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
+
+    if ((omode & O_TRUNC) && ip->type == T_FILE) {
+      itrunc(ip);
+    }
+
+    iunlock(ip);
     end_op();
-    return -1;
+
+    return fd;
   }
-
-  if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
-    if(f)
-      fileclose(f);
-    iunlockput(ip);
-    end_op();
-    return -1;
-  }
-
-  if(ip->type == T_DEVICE){
-    f->type = FD_DEVICE;
-    f->major = ip->major;
-  } else {
-    f->type = FD_INODE;
-    f->off = 0;
-  }
-  f->ip = ip;
-  f->readable = !(omode & O_WRONLY);
-  f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
-
-  if((omode & O_TRUNC) && ip->type == T_FILE){
-    itrunc(ip);
-  }
-
-  iunlock(ip);
-  end_op();
-
-  return fd;
 }
+
 
 uint64
 sys_mkdir(void)
@@ -501,5 +529,45 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_symlink(void)
+{
+  char target[MAXPATH];
+  char path[MAXPATH];
+  struct inode* ip;
+
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+  {
+    return -1;
+  }
+  printf("start create link %s to %s\n", path, target);
+  begin_op();
+  if((ip = create(path, T_SYMLINK, 0, 0)) == 0)
+  {
+    end_op();
+    return -1;
+  }
+  if(writei(ip, 0, (uint64)target, 0, MAXPATH) < MAXPATH)
+  {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  iunlockput(ip);
+  end_op();
+
+  /*
+  begin_op();
+  if(argstr(0, path, MAXPATH) < 0 || (ip = create(path, T_DIR, 0, 0)) == 0){
+  end_op();
+  return -1;
+  }
+  iunlockput(ip);
+  end_op();
+  */
+
   return 0;
 }

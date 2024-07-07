@@ -106,6 +106,7 @@ bread(uint dev, uint blockno)
 void
 bwrite(struct buf *b)
 {
+  //printf("write bio blockno is %d\n", b->blockno);
   if(!holdingsleep(&b->lock))
     panic("bwrite");
   virtio_disk_rw(b, 1);
