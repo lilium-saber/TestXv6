@@ -503,3 +503,108 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_mmap(void)
+{
+  printf("into sys_mmap\n");
+  uint64 addr;
+  uint64 error_code = 0xffffffffffffffff;
+  int length;
+  int prot;
+  int flags;
+  int fd;
+  int offset;
+  struct file *fl;
+
+  argaddr(0, &addr);
+  argint(1, &length);
+  argint(2, &prot);
+  argint(3, &flags);
+  //argint(4, &fd);
+  argfd(4, &fd, &fl);
+  argint(5, &offset);
+  
+  if(fl->writable == 0 && flags == MAP_SHARED && (prot & PROT_WRITE) != 0)
+  {
+    return error_code;
+  }
+
+  struct proc *p = myproc();
+  if((p->sz + length) > MAXVA)
+  {
+    return error_code;
+  }
+  for(int i = 0; i < MVMA; i++)
+  {
+    if(p->vmas[i].used == 0)
+    {
+      filedup(fl);
+      p->vmas[i].fl = fl;
+      p->vmas[i].used = 1;
+      p->vmas[i].prot = prot;
+      p->vmas[i].fd = fd;
+      p->vmas[i].len = length;
+      p->vmas[i].offset = offset;
+      p->vmas[i].flags = flags;
+      p->vmas[i].addr = p->sz;
+
+      p->sz = p->sz + length;
+
+      return p->vmas[i].addr;
+    }
+  }
+  
+  return error_code;
+}
+
+uint64
+sys_munmap(void)
+{
+  printf("munmap start\n");
+  uint64 addr;
+  int length;
+
+  argaddr(0, &addr);
+  argint(1, &length);
+
+  struct proc *p = myproc();
+  int i = 0;
+  for(; i < MVMA; i++)
+  {
+    if(p->vmas[i].used && p->vmas[i].len >= length)
+    {
+      if(p->vmas[i].addr == addr)
+      {
+        p->vmas[i].addr = p->vmas[i].addr + length;
+        p->vmas[i].len = p->vmas[i].len - length;
+        break;
+      }
+      if((p->vmas[i].addr + p->vmas[i].len) == (length + addr))
+      {
+        p->vmas[i].len = p->vmas[i].len - length;
+        break;
+      }
+    }
+  }
+  if(i == MVMA)
+  {
+    return -1;
+  }
+
+  if((p->vmas[i].flags == MAP_SHARED) && (p->vmas[i].prot & PROT_WRITE) != 0)
+  {
+    filewrite(p->vmas[i].fl, addr, length);
+  }
+
+  uvmunmap(p->pagetable, addr, (length / PGSIZE), 1);
+
+  if(!(p->vmas[i].len))
+  {
+    p->vmas[i].used = 0;
+    fileclose(p->vmas[i].fl);
+  }
+  printf("munmap is end\n");
+
+  return 0;
+}

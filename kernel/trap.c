@@ -1,10 +1,14 @@
 #include "types.h"
+#include "fs.h"
 #include "param.h"
 #include "memlayout.h"
 #include "riscv.h"
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+#include "sleeplock.h"
+#include "file.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -15,6 +19,8 @@ extern char trampoline[], uservec[], userret[];
 void kernelvec();
 
 extern int devintr();
+int
+mmap_trap(uint64 va, int cause);
 
 void
 trapinit(void)
@@ -67,6 +73,23 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if(r_scause() == 13 || r_scause() == 15) {
+    //#ifdef LAB_MMAP
+    printf("page error and enter trap\n");
+    uint64 va = r_stval();
+    printf("va is %p\n", va);
+    if((PGROUNDUP(p->trapframe->sp) - 1 < va) && (va < p->sz))
+    {
+      if(mmap_trap(va, r_scause()) != 0)
+      {
+        setkilled(p);
+      }
+    }
+    else
+    {
+      setkilled(p);
+    }
+    //#endif
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
@@ -219,3 +242,66 @@ devintr()
   }
 }
 
+int
+mmap_trap(uint64 va, int cause)
+{
+  printf("mmap_trap start, cause is %d\n", cause);
+  int i = 0;
+  struct proc *p = myproc();
+  for(; i < MVMA; i++)
+  {
+    if(i == MVMA)
+    {
+      return -1;
+    }
+    if(p->vmas[i].used != 0 && p->vmas[i].addr <= va && (p->vmas[i].addr + p->vmas[i].len - 1) >= va)
+    {
+      break;
+    }
+  }
+  struct file *files = p->vmas[i].fl;
+  if((cause == 13 && files->readable == 0) || (cause == 15 && files->writable == 0))
+  {
+    return -1;
+  }
+  struct inode *ip = files->ip;
+  int flags = PTE_U;//设置权限
+  int prot = p->vmas[i].prot;
+  int offset = p->vmas[i].offset + PGROUNDDOWN(va - p->vmas[i].addr);
+  int read_num;
+  if(prot & PROT_READ)
+  {
+    flags |= PTE_R;
+  }
+  if(prot & PROT_EXEC)
+  {
+    flags |= PTE_X;
+  }
+  if(prot & PROT_WRITE)
+  {
+    flags |= PTE_W;
+  }
+  void *pa = kalloc();
+  if(pa == 0)
+  {
+    return -1;
+  }
+  memset(pa, 0, PGSIZE);
+
+  ilock(ip);
+  if((read_num = readi(ip, 0, (uint64)pa, offset, PGSIZE)) == 0)//读取磁盘
+  {
+    iunlock(ip);
+    kfree(pa);
+    return -1;
+  }
+  iunlock(ip);
+
+  if(mappages(p->pagetable, va, PGSIZE, (uint64)pa, flags) < 0)//页表映射
+  {
+    kfree(pa);
+    return -1;
+  }
+  printf("mmap_trap end\n");
+  return 0;
+}
