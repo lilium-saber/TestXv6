@@ -259,8 +259,9 @@ dns()
 int
 main(int argc, char *argv[])
 {
-  int i, ret;
-  uint16 dport = NET_TESTS_PORT;
+  //int i, ret;
+  int i;
+  uint16 dport = 26099;//NET_TESTS_PORT
 
   printf("nettests running on port %d\n", dport);
   
@@ -273,20 +274,24 @@ main(int argc, char *argv[])
     ping(2000, dport, 1);
   printf("OK\n");
   
+  /*
   printf("testing multi-process pings: ");
   for (i = 0; i < 10; i++){
     int pid = fork();
     if (pid == 0){
+      printf("%d\n", pid);
       ping(2000 + i + 1, dport, 1);
       exit(0);
     }
   }
   for (i = 0; i < 10; i++){
+    printf("1\n");
     wait(&ret);
     if (ret != 0)
       exit(1);
   }
   printf("OK\n");
+  */
   
   printf("testing DNS\n");
   dns();

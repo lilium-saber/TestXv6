@@ -6,8 +6,8 @@
 #define MBUF_DEFAULT_HEADROOM  128
 
 struct mbuf {
-  struct mbuf  *next; // the next mbuf in the chain
-  char         *head; // the current start position of the buffer
+  struct mbuf  *next; // the next mbuf in the chain，处理大数据包
+  char         *head; // the current start position of the buffer，指向当前缓冲区开始的位置
   unsigned int len;   // the length of the buffer
   char         buf[MBUF_SIZE]; // the backing store
 };
@@ -16,6 +16,7 @@ char *mbufpull(struct mbuf *m, unsigned int len);
 char *mbufpush(struct mbuf *m, unsigned int len);
 char *mbufput(struct mbuf *m, unsigned int len);
 char *mbuftrim(struct mbuf *m, unsigned int len);
+void net_rx(struct mbuf *m);
 
 // The above functions manipulate the size and position of the buffer:
 //            <- push            <- trim
