@@ -15,6 +15,95 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
+void
+vmprintf(pagetable_t pagetable, int deep)
+{
+  /*
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      freewalk((pagetable_t)child);
+      pagetable[i] = 0;
+    } else if(pte & PTE_V){
+      panic("freewalk: leaf");
+    }
+  }
+  */
+
+  for(int i = 0; i < 512; i++)
+  {
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0)
+    {
+      uint64 child = PTE2PA(pte);
+      for(int j = 0; j < deep; j++)
+      {
+        printf(".. ");
+      }
+      printf("%d: pte %p pa %p flags %p\n", i, pte, child, PTE_FLAGS(pte));
+      vmprintf((pagetable_t)child, deep + 1);
+    }
+    else if(pte & PTE_V)
+    {
+      for(int j = 0; j < deep; j++)
+      {
+        printf(".. ");
+      }
+      printf("%d: pte %p pa %p flags %p\n", i, pte, PTE2PA(pte), PTE_FLAGS(pte));
+    }
+  }
+
+}
+
+void
+proc_mapkpage(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
+{
+  if(mappages(pagetable, va, size, pa, perm) != 0)
+  {
+    panic("proc map page fail");
+  }
+}
+
+// alloc k_page table for proc
+pagetable_t
+proc_kvmmake()
+{
+  pagetable_t kpg;
+  kpg = (pagetable_t)kalloc();
+  if(kpg == 0)
+  {
+    return 0;
+  }
+  memset(kpg, 0, PGSIZE);
+
+  proc_mapkpage(kpg, UART0, PGSIZE, UART0, PTE_R | PTE_W);
+  proc_mapkpage(kpg, VIRTIO0, PGSIZE, VIRTIO0, PTE_R | PTE_W);
+  proc_mapkpage(kpg, PLIC, 0x400000, PLIC, PTE_R | PTE_W);
+  proc_mapkpage(kpg, KERNBASE, (uint64)etext-KERNBASE, KERNBASE, PTE_R | PTE_X);
+  proc_mapkpage(kpg, (uint64)etext, PHYSTOP-(uint64)etext, (uint64)etext, PTE_R | PTE_W);
+  proc_mapkpage(kpg, TRAMPOLINE, PGSIZE, (uint64)trampoline, PTE_R | PTE_X);
+
+  return kpg;
+}
+
+void
+proc_freek(pagetable_t pagetable)
+{
+  for(int i = 0; i < 512; i++)
+  {
+    pte_t pte = pagetable[i];
+    uint64 child = PTE2PA(pte);
+    if((PTE_V & pte) && (pte & (PTE_R | PTE_W | PTE_X)) == 0)
+    {
+      proc_freek((pagetable_t)child);
+      pagetable[i] = 0;
+    }
+  }
+  kfree((void*)pagetable);
+}
+
 // Make a direct-map page table for the kernel.
 pagetable_t
 kvmmake(void)
@@ -435,5 +524,26 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return 0;
   } else {
     return -1;
+  }
+}
+
+void
+page_copy(pagetable_t pagetable, pagetable_t kpg, uint64 old_sz, uint64 new_sz)
+{
+  old_sz = PGROUNDUP(old_sz);
+  pte_t *pte_old, *pte_new;
+  for(uint64 i = old_sz; i < new_sz; i = i + PGSIZE)
+  {
+    if((pte_old = walk(pagetable, i, 0)) == 0)
+    {
+      panic("pte_old");
+    }
+    if((pte_new = walk(kpg, i, 1)) == 0)
+    {
+      panic("pte_new");
+    }
+    uint64 pa = PTE2PA(*pte_old);
+    int flags = (PTE_FLAGS(*pte_old)) & (~PTE_U);
+    *pte_new = PA2PTE(pa) | flags;
   }
 }
