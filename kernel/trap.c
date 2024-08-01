@@ -16,6 +16,105 @@ void kernelvec();
 
 extern int devintr();
 
+/*
+int
+uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
+{
+  pte_t *pte;
+  uint64 pa, i;
+  uint flags;
+  //char *mem;
+
+  for(i = 0; i < sz; i += PGSIZE){
+    if((pte = walk(old, i, 0)) == 0)
+      panic("uvmcopy: pte should exist");
+    if((*pte & PTE_V) == 0)
+      panic("uvmcopy: page not present");
+    pa = PTE2PA(*pte);
+    flags = PTE_FLAGS(*pte);
+    
+    if((mem = kalloc()) == 0)
+      goto err;
+    memmove(mem, (char*)pa, PGSIZE);
+    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+      kfree(mem);
+      goto err;
+    }
+    
+    flags &= (~PTE_W);
+    if(mappages(new, i, PGSIZE, pa, flags) != 0)
+    {
+      goto err;
+    }
+  }
+  return 0;
+
+ err:
+  uvmunmap(new, 0, i / PGSIZE, 1);
+  return -1;
+}
+*/
+
+// 0 is cowPage
+// >0 is lazy
+// <0 is wrong
+int
+isCowPage(pagetable_t pagetable, uint64 va)
+{
+  if(va >= MAXVA)
+  {
+    return 1;
+  }
+  pte_t *pte = walk(pagetable, va, 0);
+  if((pte == 0) || ((*pte & PTE_V) == 0))
+  {
+    return 1;
+  }
+  return (*pte & PTE_COW) ? 0 : 1;
+}
+
+void*
+allocCowPage(pagetable_t pagetable, uint64 va)
+{
+  if(va % PGSIZE)
+  {
+    return 0;
+  }
+  uint64 pa = walkaddr(pagetable, va);
+  if(pa == 0)
+  {
+    return 0;
+  }
+  pte_t *pte = walk(pagetable, va, 0);
+  if(getCount((void*)pa) == 1)
+  {
+    *pte |= PTE_W;
+    *pte &= (~PTE_COW);
+    return (void*)pa;
+  }
+  else
+  {
+    char *mem = kalloc();
+    if(mem == 0)
+    {
+      return 0;
+    }
+    memmove(mem, (void*)pa, PGSIZE);
+    *pte = *pte & (~PTE_V);
+    if(mappages(pagetable, va, PGSIZE, (uint64)mem, ((PTE_FLAGS(*pte) | PTE_W) & (~PTE_COW))) != 0)
+    {
+      kfree(mem);
+      *pte |= PTE_V;
+      return 0;
+    }
+    *pte |= PTE_V;
+
+    kfree((void*)PGROUNDDOWN(pa));
+    return mem;
+  }
+  
+}
+
 void
 trapinit(void)
 {
@@ -67,7 +166,79 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if(r_scause() == 15 || r_scause() == 13)
+  {
+    uint64 va = r_stval();
+    if(isCowPage(p->pagetable, va) > 0)
+    {
+      //lazy
+      //printf("trap lazy\n");
+      //setkilled(p);
+      
+      char* mem = kalloc();
+      if(mem != 0 && (PGROUNDUP(p->trapframe->sp) - 1 < va) && va < p->sz)
+      {
+        memset((void*)mem, 0, PGSIZE);
+        if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, (PTE_R | PTE_W | PTE_U | PTE_X)) != 0)
+        {
+          printf("lazy mmap error\n");
+          kfree(mem);
+          setkilled(p);
+        }
+      }
+      else
+      {
+        printf("lazy error\n");
+        setkilled(p);
+      }
+      
+      /*
+      uint64
+uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
+{
+  char *mem;
+  uint64 a;
+
+  if(newsz < oldsz)
+    return oldsz;
+
+  oldsz = PGROUNDUP(oldsz);
+  for(a = oldsz; a < newsz; a += PGSIZE){
+    mem = kalloc();
+    if(mem == 0){
+      uvmdealloc(pagetable, a, oldsz);
+      return 0;
+    }
+    memset(mem, 0, PGSIZE);
+    if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_R|PTE_U|xperm) != 0){
+      kfree(mem);
+      uvmdealloc(pagetable, a, oldsz);
+      return 0;
+    }
+  }
+  return newsz;
+}
+      */
+      //setkilled(p);
+    }
+    else if(isCowPage(p->pagetable, va) == 0)
+    {
+      //cow
+      //printf("trap cow\n");
+      if(va >= p->sz || allocCowPage(p->pagetable, PGROUNDDOWN(va)) == 0)
+      {
+        setkilled(p);
+      }
+    }
+    else
+    {
+      printf("trap of w/r page: unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      setkilled(p);
+    }
+    
+  }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     setkilled(p);

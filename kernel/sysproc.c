@@ -43,8 +43,22 @@ sys_sbrk(void)
 
   argint(0, &n);
   addr = myproc()->sz;
+  
+  if(n > 0)
+  {
+    myproc()->sz += n;
+  }
+  else if(addr + n > 0)
+  {
+    //负数n
+    //myproc()->sz += n;
+    myproc()->sz = uvmdealloc(myproc()->pagetable, addr, addr + n);
+    //three: panic: freewalk: leaf
+  }
+  /*
   if(growproc(n) < 0)
     return -1;
+  */
   return addr;
 }
 
